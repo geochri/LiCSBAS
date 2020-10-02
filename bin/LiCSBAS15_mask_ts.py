@@ -1,54 +1,34 @@
 #!/usr/bin/env python3
 """
+v1.8.1 20200911 Yu Morishita, GSI
+
 ========
 Overview
 ========
-This script makes a mask for time series using several noise indices.
-
-=========
-Changelog
-=========
-v1.6 20200124 Yu Morishita, Uni of Leeds and GSI
- - Increase default vstd threshold because vstd is not useful
-v1.5 20200123 Yu Morishita, Uni of Leeds and GSI
- - Change default n_gap threshold for L-band to 1
-v1.4 20200122 Yu Morishita, Uni of Leeds and GSI
- - Remove close fig which can cause error
-v1.3 20191128 Yu Morishita, Uni of Leeds and GSI
- - Add noautoadjust option
-v1.2 20190918 Yu Morishita, Uni of Leeds and GSI
- - Output mask_ts_mskd.png
-v1.1 20190906 Yu Morishita, Uni of Leeds and GSI
- - tight_layout and auto ajust of size for png
-v1.0 20190724 Yu Morishita, Uni of Leeds and GSI
- - Original implementation
+This script makes a mask for time series using several noise indices. The pixel is masked if any of the values of the noise indices for a pixel is worse (larger or smaller) than a specified threshold.
 
 ===============
 Input & output files
 ===============
-Inputs in TS_GEOCml* :
- - results/
-   - vel
-   - coh_avg
-   - n_unw
-   - vstd
-   - maxTlen
-   - n_gap
-   - stc
-   - n_ifg_noloop
-   - n_loop_err
-   - resid_rms
- - info/parameters.txt
+Inputs in TS_GEOCml*/ :
+ - results/[vel, coh_avg, n_unw, vstd, maxTlen, n_gap, stc,
+            n_ifg_noloop, n_loop_err, resid_rms]
+ - info/13parameters.txt
  
-Outputs in TS_GEOCml* directory
- - mask_ts[_mskd].png
- - results/vel.mskd[.png]
- - results/mask[.png]
+Outputs in TS_GEOCml*/
+ - mask_ts[_mskd].png : Quick-look image of mask and noise indices
+ - results/
+   - vel.mskd[.png]   : Masked velocity
+   - mask[.png]       : Mask
+ - info/15parameters.txt : List of used parameters
 
 =====
 Usage
 =====
-LiCSBAS15_mask_ts.py -t tsadir [-c coh_thre] [-u n_unw_r_thre] [-v vstd_thre] [-T maxTlen_thre] [-g n_gap_thre] [-s stc_thre] [-i n_ifg_noloop_thre] [-l n_loop_err_thre] [-r resid_rms_thre] [--vmin vmin] [--vmax vmin] [--keep_isolated] [--noautoadjust]
+LiCSBAS15_mask_ts.py -t tsadir [-c coh_thre] [-u n_unw_r_thre] [-v vstd_thre]
+  [-T maxTlen_thre] [-g n_gap_thre] [-s stc_thre] [-i n_ifg_noloop_thre]
+  [-l n_loop_err_thre] [-r resid_rms_thre] [--vmin float] [--vmax float]
+  [--keep_isolated] [--noautoadjust]
 
  -t  Path to the TS_GEOCml* dir.
  -c  Threshold of coh_avg (average coherence)
@@ -63,16 +43,39 @@ LiCSBAS15_mask_ts.py -t tsadir [-c coh_thre] [-u n_unw_r_thre] [-v vstd_thre] [-
  -r  Threshold of resid_rms (RMS of residuals in inversion (mm))
  --v[min|max]  Min|Max value for output figure of velocity (Default: auto)
  --keep_isolated  Keep (not mask) isolated pixels
-                  (Default: they are masked using STC)
+                  (Default: they are masked by stc)
  --noautoadjust  Do not auto adjust threshold when all pixels are masked
                  (Default: do auto adjust)
  
  Default thresholds for L-band:
-   C-band : -c 0.05 -u 1.5 -v 100 -T 1 -g 10 -s 5  -i 10 -l 5 -r 2
-   L-band : -c 0.01 -u 1   -v 200 -T 1 -g 1  -s 10 -i 10 -l 1 -r 10
+   C-band : -c 0.05 -u 1.5 -v 100 -T 1 -g 10 -s 5  -i 50 -l 5 -r 2
+   L-band : -c 0.01 -u 1   -v 200 -T 1 -g 1  -s 10 -i 50 -l 1 -r 10
  
 """
-
+#%% Change log
+'''
+v1.8.1 20200911 Yu Morishita, GSI
+ - Change default to -i 50
+v1.8 20200902 Yu Morishita, GSI
+ - Use nearest interpolation to avoid expanded nan
+v1.7 20200224 Yu Morishita, Uni of Leeds and GSI
+ - Change color of mask_ts.png
+ - Update about parameters.txt
+v1.6 20200124 Yu Morishita, Uni of Leeds and GSI
+ - Increase default vstd threshold because vstd is not useful
+v1.5 20200123 Yu Morishita, Uni of Leeds and GSI
+ - Change default n_gap threshold for L-band to 1
+v1.4 20200122 Yu Morishita, Uni of Leeds and GSI
+ - Remove close fig which can cause error
+v1.3 20191128 Yu Morishita, Uni of Leeds and GSI
+ - Add noautoadjust option
+v1.2 20190918 Yu Morishita, Uni of Leeds and GSI
+ - Output mask_ts_mskd.png
+v1.1 20190906 Yu Morishita, Uni of Leeds and GSI
+ - tight_layout and auto ajust of size for png
+v1.0 20190724 Yu Morishita, Uni of Leeds and GSI
+ - Original implementation
+'''
 
 #%% Import
 import getopt
@@ -81,6 +84,7 @@ os.environ['QT_QPA_PLATFORM']='offscreen'
 import sys
 import time
 import numpy as np
+import SCM
 import LiCSBAS_io_lib as io_lib
 import LiCSBAS_plot_lib as plot_lib
 
@@ -101,7 +105,7 @@ class Usage(Exception):
 #%%
 def add_subplot(fig, i, data, vmin, vmax, cmap, title):
     ax = fig.add_subplot(3, 4, i+1) #index start from 1
-    im = ax.imshow(data, vmin=vmin, vmax=vmax, cmap=cmap)
+    im = ax.imshow(data, vmin=vmin, vmax=vmax, cmap=cmap, interpolation='nearest')
     fig.colorbar(im)
     ax.set_title('{0}'.format(title))
     ax.set_xticklabels([])
@@ -116,6 +120,8 @@ def main(argv=None):
         argv = sys.argv
         
     start = time.time()
+    ver="1.8.1"; date=20200911; author="Y. Morishita"
+    print("\n{} ver{} {} {}".format(os.path.basename(argv[0]), ver, date, author), flush=True)
     print("{} {}".format(os.path.basename(argv[0]), ' '.join(argv[1:])), flush=True)
 
 
@@ -126,8 +132,11 @@ def main(argv=None):
     vmax = []
     keep_isolated = False
     auto_adjust = True
-
-
+    
+    cmap_vel = SCM.roma.reversed()
+    cmap_noise = 'viridis'
+    cmap_noise_r = 'viridis_r'
+    
     #%% Read options
     try:
         try:
@@ -185,7 +194,10 @@ def main(argv=None):
     tsadir = os.path.abspath(tsadir)
     resultsdir = os.path.join(tsadir,'results')
 
-    parmfile = os.path.join(tsadir, 'info', 'parameters.txt')
+    inparmfile = os.path.join(tsadir, 'info', '13parameters.txt')
+    if not os.path.exists(inparmfile):  ## for old LiCSBAS13 <v1.2
+        inparmfile = os.path.join(tsadir, 'info', 'parameters.txt')
+    outparmfile = os.path.join(tsadir, 'info', '15parameters.txt')
     maskts_png = os.path.join(tsadir,'mask_ts.png')
     maskts2_png = os.path.join(tsadir,'mask_ts_masked.png')
 
@@ -198,16 +210,16 @@ def main(argv=None):
 
 
     ### Get size and ref
-    width = int(io_lib.get_param_par(parmfile, 'range_samples'))
-    length = int(io_lib.get_param_par(parmfile, 'azimuth_lines'))
-    wavelength = float(io_lib.get_param_par(parmfile, 'wavelength'))
+    width = int(io_lib.get_param_par(inparmfile, 'range_samples'))
+    length = int(io_lib.get_param_par(inparmfile, 'azimuth_lines'))
+    wavelength = float(io_lib.get_param_par(inparmfile, 'wavelength'))
 
-    n_im = int(io_lib.get_param_par(parmfile, 'n_im'))
+    n_im = int(io_lib.get_param_par(inparmfile, 'n_im'))
 
     
     #%% Determine default thretholds depending on frequency band
     if not 'maxTlen' in thre_dict: thre_dict['maxTlen'] = 1
-    if not 'n_ifg_noloop' in thre_dict: thre_dict['n_ifg_noloop'] = 10
+    if not 'n_ifg_noloop' in thre_dict: thre_dict['n_ifg_noloop'] = 50
 
     if wavelength > 0.2: ## L-band
         if not 'coh_avg' in thre_dict: thre_dict['coh_avg'] = 0.01
@@ -297,14 +309,20 @@ def main(argv=None):
     rate_nomask = n_nomask/n_pt_all*100
 
 
-    #%% Stdout info
-    print('')
-    print('Noise index    : Threshold  (rate to be masked)')
-    for i, name in enumerate(names):
-        print('- {:12s} : {:4} {:5} ({:4.1f}%)'.format(name, thre_dict[name], units[i], mskd_rate[i]))
-    print('')
-    print('Masked pixels  : {}/{} ({:.1f}%)'.format(n_pt_all-n_nomask, n_pt_all, 100-rate_nomask))
-    print('Kept pixels    : {}/{} ({:.1f}%)\n'.format(n_nomask, n_pt_all, rate_nomask), flush=True)
+    #%% Stdout and save info
+    with open(outparmfile, "w") as f:
+        print('')
+        print('Noise index    : Threshold  (rate to be masked)')
+        print('Noise index    : Threshold  (rate to be masked)', file=f)
+        for i, name in enumerate(names):
+            print('- {:12s} : {:4} {:5} ({:4.1f}%)'.format(name, thre_dict[name], units[i], mskd_rate[i]))
+            print('- {:12s} : {:4} {:5} ({:4.1f}%)'.format(name, thre_dict[name], units[i], mskd_rate[i]), file=f)
+        print('')
+        print('', file=f)
+        print('Masked pixels  : {}/{} ({:.1f}%)'.format(n_pt_all-n_nomask, n_pt_all, 100-rate_nomask))
+        print('Masked pixels  : {}/{} ({:.1f}%)'.format(n_pt_all-n_nomask, n_pt_all, 100-rate_nomask), file=f)
+        print('Kept pixels    : {}/{} ({:.1f}%)\n'.format(n_nomask, n_pt_all, rate_nomask), flush=True)
+        print('Kept pixels    : {}/{} ({:.1f}%)\n'.format(n_nomask, n_pt_all, rate_nomask), file=f)
 
     if n_nomask == 1:
         print('All pixels are masked!!', file=sys.stderr)
@@ -342,7 +360,7 @@ def main(argv=None):
     titles = ['vel.mskd', 'vel', 'mask']
     vmins = [vmin, vmin, 0]
     vmaxs = [vmax, vmax, 1]
-    cmaps = ['jet', 'jet', 'viridis']
+    cmaps = [cmap_vel, cmap_vel, cmap_noise]
     for i in range(3): 
         add_subplot(fig, i, data[i], vmins[i], vmaxs[i], cmaps[i], titles[i])
         i2 = 0 if i==1 else 1 if i==0 else 2 # inv vel and vel.mskd
@@ -359,11 +377,11 @@ def main(argv=None):
             data[bool_nan] = np.nan
         
         if gt_lt[i] == 'lt': ## coh_avg, n_unw, maxTlen
-            cmap = 'viridis'
+            cmap = cmap_noise
             vmin_n = thre_dict[name]*0.8
             vmax_n = np.nanmax(data)
         else:
-            cmap = 'viridis_r'
+            cmap = cmap_noise_r
             vmin_n = 0
             vmax_n = thre_dict[name]*1.2
 
@@ -386,18 +404,16 @@ def main(argv=None):
     vel_mskd.tofile(velmskdfile)
 
     pngfile = velmskdfile+'.png'
-    cmap = 'jet'
     title = 'Masked velocity (mm/yr)'
-    plot_lib.make_im_png(vel_mskd, pngfile, cmap, title, vmin, vmax)
+    plot_lib.make_im_png(vel_mskd, pngfile, cmap_vel, title, vmin, vmax)
 
 
     maskfile = os.path.join(resultsdir,'mask')
     mask.tofile(maskfile)
 
     pngfile = maskfile+'.png'
-    cmap = 'viridis'
     title = 'Mask'
-    plot_lib.make_im_png(mask, pngfile, cmap, title, 0, 1)
+    plot_lib.make_im_png(mask, pngfile, cmap_noise, title, 0, 1)
 
     
     #%% Finish

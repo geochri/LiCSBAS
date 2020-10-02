@@ -1,13 +1,59 @@
 #!/usr/bin/env python3
 """
+v1.5.1 20200916 Yu Morishita, GSI
+
 ========
 Overview
 ========
-This script converts geotiff files to float format for further time series analysis, and also downsamples (multilooks) data if specified.
+This script converts GeoTIFF files of unw and cc to float32 and uint8 format, respectively, for further time series analysis, and also downsamples (multilooks) data if specified. Existing files are not re-created to save time, i.e., only the newly available data will be processed.
 
-=========
-Changelog
-=========
+===============
+Input & output files
+===============
+Inputs:
+ - GEOC/    
+   - yyyymmdd_yyyymmdd/
+     - yyyymmdd_yyyymmdd.geo.unw.tif
+     - yyyymmdd_yyyymmdd.geo.cc.tif
+  [- *.geo.mli.tif]
+  [- *.geo.hgt.tif]
+  [- *.geo.[E|N|U].tif] (if not exist, try to download from COMET-LiCS web)
+  [- baselines] (if not exist, try to download from COMET-LiCS web)
+  [- metadata.txt]
+
+Outputs in GEOCml*/ (downsampled if indicated):
+ - yyyymmdd_yyyymmdd/
+   - yyyymmdd_yyyymmdd.unw[.png] (float32)
+   - yyyymmdd_yyyymmdd.cc (uint8)
+ - baselines (may be dummy)
+ - EQA.dem_par
+ - slc.mli[.par|.png]
+ - hgt[.png]
+ - [E|N|U].geo (if exist)
+ - no_unw_list.txt (if there are unavailable unw|cc)
+
+=====
+Usage
+=====
+LiCSBAS02_ml_prep.py -i GEOCdir [-o GEOCmldir] [-n nlook] [-f frameID] [--n_para int]
+
+ -i  Path to the input GEOC dir containing stack of geotiff data
+ -o  Path to the output GEOCml dir (Default: GEOCml[nlook])
+ -n  Number of donwsampling factor (Default: 1, no donwsampling)
+ -f  Frame ID (e.g., 021D_04972_131213). Used only for downloading ENU
+     (Default: Read from directory name)
+ --n_para  Number of parallel processing (Default: # of usable CPU)
+
+"""
+#%% Change log
+'''
+v1.5.1 20200916 Yu Morishita, GSI
+ - Bug fix in handling cc float
+v1.5 20200909 Yu Morishita, GSI
+ - Parallel processing
+v1.4 20200228 Yu Morishita, Uni of Leeds and GSI
+ - Change format of output cc from float32 to uint8
+ - Add center_time into slc.mli.par
 v1.3 20191115 Yu Morishita, Uni of Leeds and GSI
  - Use mli and hgt
 v1.2 20191014 Yu Morishita, Uni of Leeds and GSI
@@ -17,43 +63,7 @@ v1.1 20190824 Yu Morishita, Uni of Leeds and GSI
  - Skip broken geotiff
 v1.0 20190731 Yu Morishita, Uni of Leeds and GSI
  - Original implementation
-
-===============
-Input & output files
-===============
-Inputs:
- - GEOC/    
-   - yyyymmdd_yyyymmdd
-     - yyyymmdd_yyyymmdd.geo.unw.tif
-     - yyyymmdd_yyyymmdd.geo.cc.tif
-  [- yyyymmdd.geo.mli.tif]
-  [- *.geo.[ENU].tif] (if not exist, try to download from LiCSAR portal)
-  [- baselines] (if not exist, try to download from LiCSAR portal or make dummy)
-
-Outputs in GEOCml? directory (all binary files are 4byte float little endian):
- - yyyymmdd_yyyymmdd/yyyymmdd_yyyymmdd.unw[.png] (downsampled if indicated)
- - yyyymmdd_yyyymmdd/yyyymmdd_yyyymmdd.cc[.png] (downsampled if indicated)
- - baselines (may be dummy)
- - EQA.dem_par
- - slc.mli[.par|.png]
- - hgt[.png]
- - E.geo (if exist)
- - N.geo (if exist)
- - U.geo (if exist)
- - no_unw_list.txt (if there are unavailable unw|cc exists)
-
-=====
-Usage
-=====
-LiCSBAS02_ml_prep.py -i GEOCdir [-o GEOCmldir] [-n nlook] [-f FRAME]
-
- -i  Path to the input GEOC dir containing stack of geotiff data
- -o  Path to the output GEOCml dir (Default: GEOCml[nlook])
- -n  Number of donwsampling factor (Default: 1, no donwsampling)
- -f  Frame ID (e.g., 021D_04972_131213). Used only for downloading ENU
-     (Default: Read from directory name)
-
-"""
+'''
 
 
 #%% Import
@@ -66,6 +76,8 @@ import shutil
 import gdal
 import glob
 import numpy as np
+import subprocess as subp
+import multiprocessing as multi
 import LiCSBAS_io_lib as io_lib
 import LiCSBAS_tools_lib as tools_lib
 import LiCSBAS_plot_lib as plot_lib
@@ -84,7 +96,12 @@ def main(argv=None):
         argv = sys.argv
         
     start = time.time()
+    ver="1.5.1"; date=20200916; author="Y. Morishita"
+    print("\n{} ver{} {} {}".format(os.path.basename(argv[0]), ver, date, author), flush=True)
     print("{} {}".format(os.path.basename(argv[0]), ' '.join(argv[1:])), flush=True)
+
+    ### For parallel processing
+    global ifgdates2, geocdir, outdir, nlook, n_valid_thre, cycle, cmap
 
 
     #%% Set default
@@ -95,12 +112,13 @@ def main(argv=None):
     cmap = 'insar'
     cycle = 3
     n_valid_thre = 0.5
+    n_para = len(os.sched_getaffinity(0))
 
 
     #%% Read options
     try:
         try:
-            opts, args = getopt.getopt(argv[1:], "hi:o:n:f:", ["help"])
+            opts, args = getopt.getopt(argv[1:], "hi:o:n:f:", ["help", "n_para="])
         except getopt.error as msg:
             raise Usage(msg)
         for o, a in opts:
@@ -115,6 +133,8 @@ def main(argv=None):
                 nlook = int(a)
             elif o == '-f':
                 frameID = a
+            elif o == '--n_para':
+                n_para = int(a)
 
         if not geocdir:
             raise Usage('No GEOC directory given, -d is not optional!')
@@ -134,8 +154,6 @@ def main(argv=None):
         outdir = os.path.join(os.path.dirname(geocdir), 'GEOCml{}'.format(nlook))
     if not os.path.exists(outdir): os.mkdir(outdir)
 
-#    mlifile = os.path.join(outdir, 'slc.mli')
-
     mlipar = os.path.join(outdir, 'slc.mli.par')
     dempar = os.path.join(outdir, 'EQA.dem_par')
 
@@ -144,6 +162,12 @@ def main(argv=None):
 
     bperp_file_in = os.path.join(geocdir, 'baselines')
     bperp_file_out = os.path.join(outdir, 'baselines')
+
+    metadata_file = os.path.join(geocdir, 'metadata.txt')
+    if os.path.exists(metadata_file):
+        center_time = subp.check_output(['grep', 'center_time', metadata_file]).decode().split('=')[1].strip()
+    else:
+        center_time = None
 
     LiCSARweb = 'http://gws-access.ceda.ac.uk/public/nceo_geohazards/LiCSAR_products/'
 
@@ -254,59 +278,29 @@ def main(argv=None):
     if n_ifg-n_ifg2 > 0:
         print("  {0:3}/{1:3} unw and cc already exist. Skip".format(n_ifg-n_ifg2, n_ifg), flush=True)
 
-    ### Create
-    for i, ifgd in enumerate(ifgdates2):
-        if np.mod(i,10) == 0:
-            print("  {0:3}/{1:3}th IFG...".format(i, n_ifg2), flush=True)
-
-        unw_tiffile = os.path.join(geocdir, ifgd, ifgd+'.geo.unw.tif')
-        cc_tiffile = os.path.join(geocdir, ifgd, ifgd+'.geo.cc.tif')
-
-        ### Check if inputs exist
-        if not os.path.exists(unw_tiffile):
-            print ('  No {} found. Skip'.format(ifgd+'.geo.unw.tif'), flush=True)
-            with open(no_unw_list, 'a') as f:
-                print('{}'.format(ifgd), file=f)
-            continue
-        elif not os.path.exists(cc_tiffile):
-            print ('  No {} found. Skip'.format(ifgd+'.geo.cc.tif'), flush=True)
-            with open(no_unw_list, 'a') as f:
-                print('{}'.format(ifgd), file=f)
-            continue
-
-        ### Output dir and files
-        ifgdir1 = os.path.join(outdir, ifgd)
-        if not os.path.exists(ifgdir1): os.mkdir(ifgdir1)
-        unwfile = os.path.join(ifgdir1, ifgd+'.unw')
-        ccfile = os.path.join(ifgdir1, ifgd+'.cc')
-
-        ### Read data from geotiff
-        try:
-            unw = gdal.Open(unw_tiffile).ReadAsArray()
-            unw[unw==0] = np.nan
-        except: ## if broken
-            print ('  {} cannot open. Skip'.format(ifgd+'.geo.unw.tif'), flush=True)
-            with open(no_unw_list, 'a') as f:
-                print('{}'.format(ifgd), file=f)
-            shutil.rmtree(ifgdir1)
-            continue
-
-        try:
-            cc = gdal.Open(cc_tiffile).ReadAsArray()
-            if cc.dtype == np.uint8: ## New format since 201910
-                cc = cc.astype(np.float32)/255
-            cc[cc==0] = np.nan
-        except: ## if broken
-            print ('  {} cannot open. Skip'.format(ifgd+'.geo.cc.tif'), flush=True)
-            with open(no_unw_list, 'a') as f:
-                print('{}'.format(ifgd), file=f)
-            shutil.rmtree(ifgdir1)
-            continue
-
-        ### Read info (only once)
-        ## If all float already exist, this is not done, but no problem because
-        ## par files should alerady be exits!
-        if not 'length' in locals():
+    if n_ifg2 > 0:
+        if n_para > n_ifg2:
+            n_para = n_ifg2
+            
+        ### Create float with parallel processing
+        print('  {} parallel processing...'.format(n_para), flush=True)
+        p = multi.Pool(n_para)
+        rc = p.map(convert_wrapper, range(n_ifg2))
+        p.close()
+        
+        ifgd_ok = []
+        for i, _rc in enumerate(rc):
+            if _rc == 1:
+                with open(no_unw_list, 'a') as f:
+                    print('{}'.format(ifgdates2[i]), file=f)
+            elif _rc == 0:
+                ifgd_ok = ifgdates2[i] ## readable tiff
+        
+        ### Read info
+        ## If all float already exist, this will not be done, but no problem because
+        ## par files should alerady exist!
+        if ifgd_ok:
+            unw_tiffile = os.path.join(geocdir, ifgd_ok, ifgd_ok+'.geo.unw.tif')
             geotiff = gdal.Open(unw_tiffile)
             width = geotiff.RasterXSize
             length = geotiff.RasterYSize
@@ -321,20 +315,6 @@ def main(argv=None):
                 dlon = dlon*nlook
                 dlat = dlat*nlook
 
-        ### Multilook
-        if nlook != 1:
-            unw = tools_lib.multilook(unw, nlook, nlook, n_valid_thre)
-            cc = tools_lib.multilook(cc, nlook, nlook, n_valid_thre)
-
-        ### Output float
-        unw.tofile(unwfile)
-        cc.tofile(ccfile)
-
-        ### Make png
-        unwpngfile = os.path.join(ifgdir1, ifgd+'.unw.png')
-        plot_lib.make_im_png(np.angle(np.exp(1j*unw/cycle)*cycle), unwpngfile, cmap, ifgd+'.unw', vmin=-np.pi, vmax=np.pi, cbar=False)
-
-
 
     #%% EQA.dem_par, slc.mli.par
     if not os.path.exists(mlipar):
@@ -345,6 +325,8 @@ def main(argv=None):
             print('range_samples:   {}'.format(width), file=f)
             print('azimuth_lines:   {}'.format(length), file=f)
             print('radar_frequency: {} Hz'.format(radar_freq), file=f)
+            if center_time is not None:
+                print('center_time: {}'.format(center_time), file=f)
 
     if not os.path.exists(dempar):
         print('\nCreate EQA.dem_par', flush=True)
@@ -418,6 +400,66 @@ def main(argv=None):
 
     print('\n{} Successfully finished!!\n'.format(os.path.basename(argv[0])))
     print('Output directory: {}\n'.format(os.path.relpath(outdir)))
+
+
+#%%
+def convert_wrapper(i):
+    ifgd = ifgdates2[i]
+    if np.mod(i,10) == 0:
+        print("  {0:3}/{1:3}th IFG...".format(i, len(ifgdates2)), flush=True)
+
+    unw_tiffile = os.path.join(geocdir, ifgd, ifgd+'.geo.unw.tif')
+    cc_tiffile = os.path.join(geocdir, ifgd, ifgd+'.geo.cc.tif')
+
+    ### Check if inputs exist
+    if not os.path.exists(unw_tiffile):
+        print ('  No {} found. Skip'.format(ifgd+'.geo.unw.tif'), flush=True)
+        return 1
+    elif not os.path.exists(cc_tiffile):
+        print ('  No {} found. Skip'.format(ifgd+'.geo.cc.tif'), flush=True)
+        return 1
+
+    ### Output dir and files
+    ifgdir1 = os.path.join(outdir, ifgd)
+    if not os.path.exists(ifgdir1): os.mkdir(ifgdir1)
+    unwfile = os.path.join(ifgdir1, ifgd+'.unw')
+    ccfile = os.path.join(ifgdir1, ifgd+'.cc')
+
+    ### Read data from geotiff
+    try:
+        unw = gdal.Open(unw_tiffile).ReadAsArray()
+        unw[unw==0] = np.nan
+    except: ## if broken
+        print ('  {} cannot open. Skip'.format(ifgd+'.geo.unw.tif'), flush=True)
+        shutil.rmtree(ifgdir1)
+        return 1
+
+    try:
+        cc = gdal.Open(cc_tiffile).ReadAsArray()
+        if cc.dtype == np.float32:
+            cc = cc*255 ## 0-1 -> 0-255 to output in uint8
+    except: ## if broken
+        print ('  {} cannot open. Skip'.format(ifgd+'.geo.cc.tif'), flush=True)
+        shutil.rmtree(ifgdir1)
+        return 1
+
+    ### Multilook
+    if nlook != 1:
+        unw = tools_lib.multilook(unw, nlook, nlook, n_valid_thre)
+        cc = cc.astype(np.float32)
+        cc[cc==0] = np.nan
+        cc = tools_lib.multilook(cc, nlook, nlook, n_valid_thre)
+
+    ### Output float
+    unw.tofile(unwfile)
+    cc = cc.astype(np.uint8) ##nan->0, max255, auto-floored
+    cc.tofile(ccfile)
+
+    ### Make png
+    unwpngfile = os.path.join(ifgdir1, ifgd+'.unw.png')
+    plot_lib.make_im_png(np.angle(np.exp(1j*unw/cycle)*cycle), unwpngfile, cmap, ifgd+'.unw', vmin=-np.pi, vmax=np.pi, cbar=False)
+    
+    return 0
 
 
 #%% main

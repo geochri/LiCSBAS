@@ -1,30 +1,40 @@
 #!/usr/bin/env python3
 """
+v1.2 20200703 Yu Morishita, GSI
+
 ========
 Overview
 ========
 This script outputs a txt file of time series of displacement at a specified point from cum*.h5.
 
-=========
-Changelog
-=========
-v1.0 20190730 Yu Morishita, Uni of Leeds and GSI
- - Original implementationf
-
 =====
 Usage
 =====
-LiCSBAS_cum2tstxt.py [-p x/y] [-g lon/lat] [-i cumfile] [-o tsfile] [-r x1:x2/y1:y2] [--mask maskfile]
+LiCSBAS_cum2tstxt.py [-p x/y] [-g lon/lat] [-i cumfile] [-o tsfile] [-r x1:x2/y1:y2]
+    [--ref_geo lon1/lon2/lat1/lat2] [--mask maskfile]
 
  -p  x/y coordinate of a point to be output (index range 0 to width-1)
  -g  Lon/Lat of a point to be output
  -i  Input cum*.h5 file (Default: cum_filt.h5)
  -o  Output txt file of time series (Default: ts_[x]_[y].txt)
- -r  Reference area (Default: same as info/ref.txt)
- --mask  Path to maskfile for ref calculation (Default: No mask)
+ -r  Reference area (Default: same as info/*ref.txt)
+     Note: x1/y1 range 0 to width-1, while x2/y2 range 1 to width
+     0 for x2/y2 means all. (i.e., 0:0/0:0 means whole area).
+ --ref_geo  Reference area in geographical coordinates.
+ --mask  Path to mask file for ref calculation (Default: No mask)
+
+ Note: either -p or -g must be specified.
 
 """
-
+#%% Change log
+'''
+v1.2 20200703 Yu Morishita, Uni of Leeds and GSI
+ - Add --ref_geo option
+v1.1 20200227 Yu Morishita, Uni of Leeds and GSI
+ - Add hgt_linear_flag
+v1.0 20190730 Yu Morishita, Uni of Leeds and GSI
+ - Original implementationf
+'''
 
 #%% Import
 import getopt
@@ -51,6 +61,10 @@ def main(argv=None):
         argv = sys.argv
         
     start = time.time()
+    ver=1.2; date=20200703; author="Y. Morishita"
+    print("\n{} ver{} {} {}".format(os.path.basename(argv[0]), ver, date, author), flush=True)
+    print("{} {}".format(os.path.basename(argv[0]), ' '.join(argv[1:])), flush=True)
+
 
     #%% Set default
     xy_str = []
@@ -58,13 +72,14 @@ def main(argv=None):
     cumfile = 'cum_filt.h5'
     tsfile = []
     refarea = []
+    refarea_geo = []
     maskfile = []
 
 
     #%% Read options
     try:
         try:
-            opts, args = getopt.getopt(argv[1:], "hp:g:i:o:r:", ["help", "mask="])
+            opts, args = getopt.getopt(argv[1:], "hp:g:i:o:r:", ["help", "ref_geo=", "mask="])
         except getopt.error as msg:
             raise Usage(msg)
         for o, a in opts:
@@ -81,6 +96,8 @@ def main(argv=None):
                 tsfile = a
             elif o == '-r':
                 refarea = a
+            elif o == '--ref_geo':
+                refarea_geo = a
             elif o == '--mask':
                 maskfile = a
 
@@ -104,38 +121,57 @@ def main(argv=None):
     imdates = cumh5['imdates'][()].astype(str).tolist()
     n_im, length, width = cum.shape
 
-    try:
+    if 'corner_lat' in list(cumh5.keys()):
         geocod_flag = True
         lat1 = float(cumh5['corner_lat'][()])
         lon1 = float(cumh5['corner_lon'][()])
         dlat = float(cumh5['post_lat'][()])
         dlon = float(cumh5['post_lon'][()])
-    except:
+    else:
         geocod_flag = False
     
-    try:
+    if 'deramp_flag' in list(cumh5.keys()):
         deramp_flag = cumh5['deramp_flag'][()]
+    else:
+        deramp_flag = None
+
+    if 'hgt_linear_flag' in list(cumh5.keys()):
+        hgt_linear_flag = cumh5['hgt_linear_flag'][()]
+    else:
+        hgt_linear_flag = None
+
+    if 'filtwidth_km' in list(cumh5.keys()):
         filtwidth_km = float(cumh5['filtwidth_km'][()])
         filtwidth_yr = float(cumh5['filtwidth_yr'][()])
-    except:
-        deramp_flag = filtwidth_km = filtwidth_yr = None
+    else:
+        filtwidth_km = filtwidth_yr = None
 
 
     #%% Set info
     ###Set ref area
-    if not refarea:
-        refarea = cumh5['refarea'][()]
-        refx1, refx2, refy1, refy2 = [int(s) for s in re.split('[:/]', refarea)]
-    else:
+    if refarea:
         if not tools_lib.read_range(refarea, width, length):
             print('\nERROR in {}\n'.format(refarea), file=sys.stderr)
             return 2
         else:
             refx1, refx2, refy1, refy2 = tools_lib.read_range(refarea, width, length)
+    elif refarea_geo and geocod_flag:
+        lat1 = float(cumh5['corner_lat'][()])
+        lon1 = float(cumh5['corner_lon'][()])
+        dlat = float(cumh5['post_lat'][()])
+        dlon = float(cumh5['post_lon'][()])
+        if not tools_lib.read_range_geo(refarea_geo, width, length, lat1, dlat, lon1, dlon):
+            print('\nERROR in {}\n'.format(refarea_geo), file=sys.stderr)
+            return 2
+        else:
+            refx1, refx2, refy1, refy2 = tools_lib.read_range_geo(refarea_geo, width, length, lat1, dlat, lon1, dlon)
+    else:
+        refarea = cumh5['refarea'][()]
+        refx1, refx2, refy1, refy2 = [int(s) for s in re.split('[:/]', refarea)]
 
     if geocod_flag:
-        reflat1, reflon1 = tools_lib.xy2bl(refx1, refy1, lat1, dlat, lon1, dlon)
-        reflat2, reflon2 = tools_lib.xy2bl(refx2-1, refy2-1, lat1, dlat, lon1, dlon)
+        reflat2, reflon1 = tools_lib.xy2bl(refx1, refy1, lat1, dlat, lon1, dlon)
+        reflat1, reflon2 = tools_lib.xy2bl(refx2-1, refy2-1, lat1, dlat, lon1, dlon)
     else:
         reflat1 = reflon1 = reflat2 = reflon2 = None
 
@@ -204,7 +240,7 @@ def main(argv=None):
     ts_dif = ts_dif-ts_dif[0] ## Make first date zero
 
     ### Make txt
-    io_lib.make_tstxt(x, y, imdates, ts_dif, tsfile, refx1, refx2, refy1, refy2, gap1, lat=lat, lon=lon, reflat1=reflat1, reflat2=reflat2, reflon1=reflon1, reflon2=reflon2, deramp_flag=deramp_flag, filtwidth_km=filtwidth_km, filtwidth_yr=filtwidth_yr)
+    io_lib.make_tstxt(x, y, imdates, ts_dif, tsfile, refx1, refx2, refy1, refy2, gap1, lat=lat, lon=lon, reflat1=reflat1, reflat2=reflat2, reflon1=reflon1, reflon2=reflon2, deramp_flag=deramp_flag, hgt_linear_flag=hgt_linear_flag, filtwidth_km=filtwidth_km, filtwidth_yr=filtwidth_yr)
 
 
     #%% Finish

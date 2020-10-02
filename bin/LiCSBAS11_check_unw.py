@@ -1,39 +1,35 @@
 #!/usr/bin/env python3
 """
+v1.3.1 20200911 Yu Morishita, GSI
+
 ========
 Overview
 ========
-This script checks quality of unw data and identifies bad interferograms based on average coherence and coverage of the unw data. This also prepares a time series working directory.
-
-=========
-Changelog
-=========
-v1.1 20191115 Yu Morishita, Uni of Leeds and GSI
- - Add hgt
-v1.0 20190729 Yu Morishita, Uni of Leeds and GSI
- - Original implementation
+This script checks quality of unw data and identifies bad interferograms based on average coherence and coverage of the unw data. This also prepares a time series working directory (overwrite if already exists).
 
 ===============
 Input & output files
 ===============
-Inputs in GEOCml* :
- - yyyymmdd_yyyymmdd/yyyymmdd_yyyymmdd.unw[.png]
- - yyyymmdd_yyyymmdd/yyyymmdd_yyyymmdd.cc
- - slc.mli[.par|.png] (single master only, to get parameters of width etc.)
+Inputs in GEOCml*/ :
+ - yyyymmdd_yyyymmdd/
+   - yyyymmdd_yyyymmdd.unw[.png]
+   - yyyymmdd_yyyymmdd.cc
+ - slc.mli[.par|.png]
  - baselines (can be dummy)
  - EQA.dem_par
 
- Outputs in TS_GEOCml* directory
+ Outputs in TS_GEOCml*/ :
  - info/
-   - 11bad_ifg.txt : List of bad ifgs discarded from further processing
+   - 11bad_ifg.txt    : List of bad ifgs discarded from further processing
    - 11ifg_stats.txt  : Statistics of interferograms
    - EQA.dem_par (copy)
    - slc.mli.par (copy)
- - results/slc.mli[.png] (copy, if exist)
- - results/hgt[.png] (copy, if exist)
- - 11bad_ifg_ras/yyyymmdd_yyyymmdd.unw[.bmp|.png] : Ras images of bad ifgs
- - 11ifg_ras/yyyymmdd_yyyymmdd.unw[.bmp|.png] : Ras images other than bad ifgs
- - network/network11*.png    : Figures of baseline configuration
+ - results/
+   - slc.mli[.png] (copy, if exist)
+   - hgt[.png] (copy, if exist)
+ - 11bad_ifg_ras/yyyymmdd_yyyymmdd.unw.png : png of bad ifgs
+ - 11ifg_ras/yyyymmdd_yyyymmdd.unw.png     : png of good ifgs
+ - network/network11*.png  : Figures of baseline configuration
 
 =====
 Usage
@@ -41,14 +37,25 @@ Usage
 LiCSBAS11_check_unw.py -d ifgdir [-t tsadir] [-c coh_thre] [-u unw_thre]
 
  -d  Path to the GEOCml* dir containing stack of unw data.
- -t  Path to the output TS_[IFG|GEOC]ml?? dir. (Default: TS_GEOCml*)
- -c  IFGs with smaller average coherence than this value are listed as bad data.
-     (Default: 0.1)
- -u  IFGs with smaller coverage than this value are listed as bad data.
-     (Default: 0.5)
+ -t  Path to the output TS_GEOCml* dir. (Default: TS_GEOCml*)
+ -c  Threshold of average coherence (Default: 0.05)
+ -u  Threshold of coverage of unw data (Default: 0.3)
 
 """
-
+#%% Change log
+'''
+v1.3.1 20200911 Yu Morioshita, GSI
+ - Change default to -c 0.05 -u 0.3
+v1.3 20200703 Yu Morioshita, GSI
+ - Replace problematic terms
+v1.2 20200225 Yu Morishita, Uni of Leeds and GSI
+ - Not output network pdf
+ - Deal with cc file in uint8 format
+v1.1 20191115 Yu Morishita, Uni of Leeds and GSI
+ - Add hgt
+v1.0 20190729 Yu Morishita, Uni of Leeds and GSI
+ - Original implementation
+'''
 
 #%% Import
 import getopt
@@ -76,14 +83,16 @@ def main(argv=None):
         argv = sys.argv
         
     start = time.time()
+    ver="1.3.1"; date=20200911; author="Y. Morishita"
+    print("\n{} ver{} {} {}".format(os.path.basename(argv[0]), ver, date, author), flush=True)
     print("{} {}".format(os.path.basename(argv[0]), ' '.join(argv[1:])), flush=True)
 
 
     #%% Set default
     ifgdir = []
     tsadir = []
-    coh_thre = 0.1
-    unw_cov_thre = 0.5
+    coh_thre = 0.05
+    unw_cov_thre = 0.3
 
 
     #%% Read options
@@ -208,7 +217,12 @@ def main(argv=None):
 
         ## cc
         ccfile = os.path.join(ifgdir, ifgd, ifgd+'.cc')
-        coh = io_lib.read_img(ccfile, length, width)
+        if os.path.getsize(ccfile) == length*width:
+            coh = io_lib.read_img(ccfile, length, width, np.uint8)
+            coh = coh.astype(np.float32)/255
+            coh[coh==0] = np.nan
+        else:
+            coh = io_lib.read_img(ccfile, length, width)
 
         coh_avg_ifg.append(np.nanmean(coh[bool_valid])) # Use valid area only
 
@@ -257,9 +271,9 @@ def main(argv=None):
             rm_flag = ''
 
         ### For stats file
-        ix_master = imdates.index(ifgd[:8])
-        ix_slave = imdates.index(ifgd[-8:])
-        bperp_ifg = bperp[ix_slave]-bperp[ix_master]
+        ix_primary = imdates.index(ifgd[:8])
+        ix_secondary = imdates.index(ifgd[-8:])
+        bperp_ifg = bperp[ix_secondary]-bperp[ix_primary]
         mday = dt.datetime.strptime(ifgd[:8], '%Y%m%d').toordinal()
         sday = dt.datetime.strptime(ifgd[-8:], '%Y%m%d').toordinal()
         dt_ifg = sday-mday
@@ -295,13 +309,13 @@ def main(argv=None):
 
     #%% Plot network
     pngfile = os.path.join(netdir, 'network11_all.png')
-    plot_lib.plot_network(ifgdates, bperp, [], pngfile, pdf=True)
+    plot_lib.plot_network(ifgdates, bperp, [], pngfile)
 
     pngfile = os.path.join(netdir, 'network11.png')
-    plot_lib.plot_network(ifgdates, bperp, bad_ifgdates, pngfile, pdf=True)
+    plot_lib.plot_network(ifgdates, bperp, bad_ifgdates, pngfile)
 
     pngfile = os.path.join(netdir, 'network11_nobad.png')
-    plot_lib.plot_network(ifgdates, bperp, bad_ifgdates, pngfile, plot_bad=False, pdf=True)
+    plot_lib.plot_network(ifgdates, bperp, bad_ifgdates, pngfile, plot_bad=False)
 
 
     #%% Finish

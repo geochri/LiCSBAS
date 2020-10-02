@@ -1,22 +1,16 @@
 #!/usr/bin/env python3
 """
+v1.1 20191218 Yu Morishita, Uni of Leeds and GSI
+
 ========
 Overview
 ========
-This script gets values from a float file at specified points in geographical coordinates. Average values in a boxcar window are also output.
-
-=========
-Changelog
-=========
-v1.1 20191218 Yu Morishita, Uni of Leeds and GSI
- - Add win_size option
-v1.0 20190801 Yu Morishita, Uni of Leeds and GSI
- - Original implementationf
+This script gets values (and x/y coordinates) from a float32 file at specified points in geographical coordinates. Average values in a boxcar window are also output.
 
 =====
 Usage
 =====
-LiCSBAS_get_value_geo.py -i infile -p dempar -l locfile [-o outfile] [--win_size 3] [--bigendian]
+LiCSBAS_get_value_geo.py -i infile -p dempar -l locfile [-o outfile] [--win_size int] [--bigendian]
 
  -i  Input file (float, little endian, geocoded)
  -p  Dem parameter file (EQA.dem_par)
@@ -27,7 +21,13 @@ LiCSBAS_get_value_geo.py -i infile -p dempar -l locfile [-o outfile] [--win_size
  --bigendian  If input file is in big endian
 
 """
-
+#%% Change log
+'''
+v1.1 20191218 Yu Morishita, Uni of Leeds and GSI
+ - Add win_size option
+v1.0 20190801 Yu Morishita, Uni of Leeds and GSI
+ - Original implementationf
+'''
 
 #%% Import
 import getopt
@@ -51,6 +51,9 @@ def main(argv=None):
         argv = sys.argv
         
     start = time.time()
+    ver=1.1; date=20191218; author="Y. Morishita"
+    print("\n{} ver{} {} {}".format(os.path.basename(argv[0]), ver, date, author), flush=True)
+    print("{} {}".format(os.path.basename(argv[0]), ' '.join(argv[1:])), flush=True)
 
     #%% Set default
     infile = []

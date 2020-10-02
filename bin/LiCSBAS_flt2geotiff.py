@@ -1,31 +1,44 @@
 #!/usr/bin/env python3
 """
+v1.5 20200902 Yu Morishita, GSI
+
 ========
 Overview
 ========
-This script makes a GeoTIFF file from an image file (only in float format). The geotiff file can be read by a GIS software (e.g., QGIS) and used to make a figure.
-
-=========
-Changelog
-=========
-v1.2 20200130 Yu Morishita, Uni of Leeds and GSI
- - Add compress option with DEFLATE for gdal
-v1.0 20190729 Yu Morishita, Uni of Leeds and GSI
- - Original implementationf
+This script makes a GeoTIFF file from an image file (only in float32 format). The geotiff file can be read by a GIS software (e.g., QGIS) and used to make a figure. Nan will be regarded as NoDataValue as default. 0 can be replaced with nan.
 
 =====
 Usage
 =====
-LiCSBAS_flt2geotiff.py -i infile -p dempar [-o outfile] [--bigendian]
+LiCSBAS_flt2geotiff.py -i infile -p dempar [-o outfile] [--zero2nan] [--nan2zero] [--a_nodata num] [--bigendian]
 
  -i  Path to input file (float, little endian)
  -p  Path to dem parameter file (EQA.dem_par)
  -o  Output geotiff file (Default: infile[.geo].tif)
+ --a_nodata   Assign a specified nodata value in output (Default: nan)
+              "None" assigns no value as nodata
+ --zero2nan   Replace 0 with nan (Default: NOT replace 0 with nan)
+ --nan2zero   Replace nan with 0 (Default: NOT replace nan with 0)
  --bigendian  If input file is in big endian
 
 """
-# Caution: gdal or GAMMA must be installed.
+## Hidden option: --gamma
 
+#%% Change log
+'''
+v1.5 20200902 Yu Morishita, GSI
+ - Do not add .geo when already added
+v1.4 20200214 Yu Morishita, Uni of Leeds and GSI
+ - Change Default nodata to nan
+ - Remove --keep_nan and add --nan2zero
+v1.3 20200211 Yu Morishita, Uni of Leeds and GSI
+ - Add --keep_nan, --zero2nan, and --nodata options
+ - Change default to replace nan with 0.
+v1.2 20200130 Yu Morishita, Uni of Leeds and GSI
+ - Add compress option with DEFLATE for gdal
+v1.0 20190729 Yu Morishita, Uni of Leeds and GSI
+ - Original implementationf
+'''
 
 #%% Import
 import getopt
@@ -45,18 +58,25 @@ class Usage(Exception):
 
 #%% Main
 def main(argv=None):
-   
+        
     #%% Check argv
     if argv == None:
         argv = sys.argv
         
     start = time.time()
+    ver=1.5; date=20200902; author="Y. Morishita"
+    print("\n{} ver{} {} {}".format(os.path.basename(argv[0]), ver, date, author), flush=True)
+    print("{} {}".format(os.path.basename(argv[0]), ' '.join(argv[1:])), flush=True)
 
     #%% Set default
     infile = []
     dempar = []
     outfile = []
+    nodata = np.nan
     endian = 'little'
+    nan2zero_flag = False
+    zero2nan_flag = False
+    gamma_flag = False
 
     compress_option = ['COMPRESS=DEFLATE', 'PREDICTOR=3']
     ## ['COMPRESS=LZW', 'PREDICTOR=3'], ['COMPRESS=PACKBITS']
@@ -64,7 +84,7 @@ def main(argv=None):
     #%% Read options
     try:
         try:
-            opts, args = getopt.getopt(argv[1:], "hi:p:o:", ["help", "bigendian"])
+            opts, args = getopt.getopt(argv[1:], "hi:p:o:", ["help", "a_nodata=", "nan2zero", "zero2nan", "bigendian", "gamma"])
         except getopt.error as msg:
             raise Usage(msg)
         for o, a in opts:
@@ -77,8 +97,21 @@ def main(argv=None):
                 dempar = a
             elif o == '-o':
                 outfile = a
+            elif o == '--a_nodata':
+                if a.isdecimal():
+                    nodata = int(a)
+                elif a == 'None':
+                    nodata = None
+                else:
+                    nodata = float(a)
+            elif o == '--nan2zero':
+                nan2zero_flag = True
+            elif o == '--zero2nan':
+                zero2nan_flag = True
             elif o == '--bigendian':
                 endian = 'big'
+            elif o == '--gamma': ## hidden option
+                gamma_flag = True
 
         if not infile:
             raise Usage('No input file given, -i is not optional!')
@@ -88,6 +121,8 @@ def main(argv=None):
             raise Usage('No dempar file given, -p is not optional!')
         elif not os.path.exists(dempar):
             raise Usage('No {} exists!'.format(dempar))
+        if nan2zero_flag and zero2nan_flag:
+            raise Usage("Don't use both --zero2nan and --nan2zero!")
 
     except Usage as err:
         print("\nERROR:", file=sys.stderr, end='')
@@ -98,17 +133,19 @@ def main(argv=None):
 
     #%% Read info
     if not outfile:
-        outfile = infile+'.geo.tif'
+        outfile = infile.replace('.geo', '')+'.geo.tif'
 
     width = int(io_lib.get_param_par(dempar, 'width'))
     length = int(io_lib.get_param_par(dempar, 'nlines'))
 
 
-    #%% If data2geotiff (GAMMA) is available
+    #%% If data2geotiff (GAMMA) is available and --gamma is used
     gamma_comm = 'data2geotiff'
-    if shutil.which(gamma_comm):
+    if shutil.which(gamma_comm) and gamma_flag:
         dtype = '2' # float
         print('Use data2geotiff in GAMMA')
+        ### No replacement of nan and 0 is done
+        ### Nodata is set to 0
 
         if endian == 'little':
             ### Make temporary big endian file
@@ -149,13 +186,18 @@ def main(argv=None):
         lon_w_p = lon_w_g - dlon/2
                 
         data = io_lib.read_img(infile, length, width, endian=endian)
+
+        if zero2nan_flag: ### Replace 0 with nan
+            data[data==0] = np.nan
+        if nan2zero_flag: ### Replace nan with 0
+            data[np.isnan(data)] = 0
     
         driver = gdal.GetDriverByName('GTiff')
         outRaster = driver.Create(outfile, width, length, 1, gdal.GDT_Float32, options=compress_option)
         outRaster.SetGeoTransform((lon_w_p, dlon, 0, lat_n_p, 0, dlat))
         outband = outRaster.GetRasterBand(1)
         outband.WriteArray(data)
-        outband.SetNoDataValue(0)
+        if nodata is not None: outband.SetNoDataValue(nodata)
         outRaster.SetMetadataItem('AREA_OR_POINT', 'Point')
         outRasterSRS = osr.SpatialReference()
         outRasterSRS.ImportFromEPSG(4326)

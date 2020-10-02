@@ -8,6 +8,11 @@ Python3 library of input/output functions for LiCSBAS.
 =========
 Changelog
 =========
+v1.2 20200703 Yu Morioshita, GSI
+ - Replace problematic terms
+v1.1 20200227 Yu Morioshita, Uni of Leeds and GSI
+ - Add hgt_linear_flag to make_tstxt
+ - Add make_point_kml
 v1.0 20190730 Yu Morioshita, Uni of Leeds and GSI
  - Original implementation
 
@@ -35,7 +40,13 @@ def make_dummy_bperp(bperp_file, imdates):
 
 
 #%%
-def make_tstxt(x, y, imdates, ts, tsfile, refx1, refx2, refy1, refy2, gap, lat=None, lon=None, reflat1=None, reflat2=None, reflon1=None, reflon2=None, deramp_flag=None, filtwidth_km=None, filtwidth_yr=None):
+def make_point_kml(lat, lon, kmlfile):
+    with open(kmlfile, "w") as f:
+        print('<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2">\n<Document><Placemark><Point>\n<coordinates>{},{}</coordinates>\n</Point></Placemark></Document>\n</kml>'.format(lon, lat), file=f)
+
+
+#%%
+def make_tstxt(x, y, imdates, ts, tsfile, refx1, refx2, refy1, refy2, gap, lat=None, lon=None, reflat1=None, reflat2=None, reflon1=None, reflon2=None, deramp_flag=None, hgt_linear_flag=None, filtwidth_km=None, filtwidth_yr=None):
     """
     Make txt of time series.
     Format example:
@@ -44,6 +55,7 @@ def make_tstxt(x, y, imdates, ts, tsfile, refx1, refx2, refy1, refy2, gap, lat=N
     # ref     : 21:22/54:55
     # refgeo  : 136.98767/136.98767/34.95364/34.95364
     # deramp, filtwidth_km, filtwidth_yr: 1, 2, 0.653
+    # hgt_linear_flag: 1
     # gap     : 20160104_20160116, 20170204_20170216
     # linear model: -3.643*t+4.254
     20141030    0.00
@@ -72,6 +84,8 @@ def make_tstxt(x, y, imdates, ts, tsfile, refx1, refx2, refy1, refy2, gap, lat=N
             print('# refgeo  : {:.5f}/{:.5f}/{:.5f}/{:.5f}'.format(reflon1, reflon2, reflat1, reflat2), file=f)
         if filtwidth_yr is not None:
             print('# deramp, filtwidth_km, filtwidth_yr : {}, {}, {:.3f}'.format(deramp_flag, filtwidth_km, filtwidth_yr), file=f)
+        if hgt_linear_flag is not None:
+            print('# hgt_linear_flag : {}'.format(hgt_linear_flag), file=f)
         print('# gap     : {}'.format(gap_str), file=f)
         print('# linear model: {:.3f}*t{:+.3f}'.format(vel, vconst), file=f)
 
@@ -82,12 +96,14 @@ def make_tstxt(x, y, imdates, ts, tsfile, refx1, refx2, refy1, refy2, gap, lat=N
 #%%
 def read_bperp_file(bperp_file, imdates):
     """
-    bperp_file (baselines) contains (m:master, s:slave, sm: single master):
+    bperp_file (baselines) contains (m: primary (master), s: secondary,
+                                     sm: single prime):
           smdate    sdate    bp    dt
         20170302 20170326 130.9  24.0
         20170302 20170314  32.4  12.0
 
-    Old bperp_file contains (m:master, s:slave, sm: single master):
+    Old bperp_file contains (m: primary (master), s:secondary,
+                             sm: single prime):
         num    mdate    sdate   bp   dt  dt_m_sm dt_s_sm bp_m_sm bp_s_sm 
           1 20170218 20170326 96.6 36.0    -12.0    24.0    34.2   130.9
           2 20170302 20170314 32.4 12.0      0.0    12.0     0.0    32.4
@@ -102,7 +118,7 @@ def read_bperp_file(bperp_file, imdates):
         line = f.readline().split() #list
 
     if len(line) == 4: ## new format
-        bperp_dict[line[0]] = '0.00' ## single master. unnecessary?
+        bperp_dict[line[0]] = '0.00' ## single prime. unnecessary?
         with open(bperp_file) as f:
             for l in f:
                 bperp_dict[l.split()[1]] = l.split()[2]

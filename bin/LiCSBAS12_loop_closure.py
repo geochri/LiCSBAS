@@ -1,38 +1,37 @@
 #!/usr/bin/env python3
 """
+v1.3 20200907 Yu Morishita, GSI
+
 ========
 Overview
 ========
-This script identifies bad data by checking loop closure. A tentative reference point that has all valid unw data and the smallest RMS of loop phases is also determined.
-
-=========
-Changelog
-=========
-v1.1 20191106 Yu Morishita, Uni of Leeds and GSI
- - Add iteration during ref search when no ref found
-v1.0 20190730 Yu Morishita, Uni of Leeds and GSI
- - Original implementation
+This script identifies bad unw by checking loop closure. A preliminary reference point that has all valid unw data and the smallest RMS of loop phases is also determined.
 
 ===============
 Input & output files
 ===============
-Inputs in GEOCml* :
- - yyyymmdd_yyyymmdd/yyyymmdd_yyyymmdd.unw[.png]
- - yyyymmdd_yyyymmdd/yyyymmdd_yyyymmdd.cc
- - slc.mli.par (single master only, to get parameters of width etc.)
- - baselines (can be dummy)
+Inputs in GEOCml*/ :
+ - yyyymmdd_yyyymmdd/
+   - yyyymmdd_yyyymmdd.unw[.png]
+   - yyyymmdd_yyyymmdd.cc
+ - slc.mli.par
+ - baselines (may be dummy)
 
-Inputs in TS_GEOCml* :
- - info/11bad_ifg.txt  : List of bad ifgs identified in LiCSBAS11
+Inputs in TS_GEOCml*/ :
+ - info/11bad_ifg.txt  : List of bad ifgs identified in step11
  
-Outputs in TS_GEOCml* :
+Outputs in TS_GEOCml*/ :
  - 12loop/
    - loop_info.txt : Statistical information of loop phase closure
    - bad_ifg_*.txt : List of bad ifgs identified by loop closure
-   - [bad_]loop_[cand_]png/yyyymmdd_yyyymmdd_yyyymmdd_loop.png
-                   : png images of loop phase closure
+   - good_loop_png/*.png : png images of good loop phase closure
+   - bad_loop_png/*.png  : png images of bad loop phase closure
+   - bad_loop_cand_png/*.png : png images of bad loop candidates in which
+                               bad ifgs were not identified
+   - loop_ph_rms_masked[.png] : RMS of loop phases used for ref selection
+   
  - info/
-   - ref.txt             : ref point automatically sed by loop check (X/Y)
+   - 12ref.txt           : Preliminaly ref point for SB inversion (X/Y)
    - 12removed_image.txt : List of images to be removed in further processing
    - 12bad_ifg.txt       : List of bad ifgs to be removed in further processing
    - 12network_gap_info.txt : Information of gaps in network
@@ -40,29 +39,40 @@ Outputs in TS_GEOCml* :
                            Recommend to check the quality manually.
  - results/
    - n_unw[.png]      : Number of available unwrapped data to be used
-   - coh_avg[.png]    : Average of coherence
-   - n_loop_err[.png] : Number of loop errors (>pi) in data to be used
- - 12ifg_ras          : Ras images (link) of unwrapped data to be used
- - 12bad_ifg_cand_ras : Ras images (link) of unwrapped data to be used
-                        but candidates of bad data
- - 12bad_ifg_ras      : Ras images (link) of unwrapped data to be removed
- - 12no_loop_ifg_ras  : Ras images (link) of unwrapped data of no_loop_ifg
- - network/network12*.png : Figures of the network
+   - coh_avg[.png]    : Average coherence
+   - n_loop_err[.png] : Number of remaining loop errors (>pi) in data to be used
+ - 12ifg_ras/*.png     : png (link) of unw to be used
+ - 12bad_ifg_cand_ras/*.png : png (link) of unw to be used but candidates of bad
+ - 12bad_ifg_ras/*.png : png (link) of unw to be removed
+ - 12no_loop_ifg_ras/*.png : png (link) of unw with no loop
+ - network/network12*.png  : Figures of the network
 
 =====
 Usage
 =====
-LiCSBAS12_loop_closure.py -d ifgdir [-t tsadir] [-l loop_thre]
+LiCSBAS12_loop_closure.py -d ifgdir [-t tsadir] [-l loop_thre] [--n_para int]
 
  -d  Path to the GEOCml* dir containing stack of unw data.
  -t  Path to the output TS_GEOCml* dir. (Default: TS_GEOCml*)
- -l  Loop with smaller RMS than this is listed as closed loop.
-     (Default: 1.5 [rad])
+ -l  Threshold of RMS of loop phase (Default: 1.5 rad)
+ --n_para  Number of parallel processing (Default: # of usable CPU)
 
 """
-#To do?:
-#- Enable to define ref beforehand and rerun this
-       
+#%% Change log
+'''
+v1.3 20200907 Yu Morishita, GSI
+ - Parallel processing in 1st loop
+v1.2 20200228 Yu Morishita, Uni of Leeds and GSI
+ - Not output network pdf
+ - Improve bad loop cand identification
+ - Change color of png
+ - Deal with cc file in uint8 format
+ - Change ref.txt name
+v1.1 20191106 Yu Morishita, Uni of Leeds and GSI
+ - Add iteration during ref search when no ref found
+v1.0 20190730 Yu Morishita, Uni of Leeds and GSI
+ - Original implementation
+'''
 
 #%% Import
 import getopt
@@ -73,6 +83,8 @@ import shutil
 import glob
 import numpy as np
 import datetime as dt
+import multiprocessing as multi
+import SCM
 import LiCSBAS_io_lib as io_lib
 import LiCSBAS_loop_lib as loop_lib
 import LiCSBAS_tools_lib as tools_lib
@@ -94,19 +106,25 @@ def main(argv=None):
         argv = sys.argv
         
     start = time.time()
+    ver=1.3; date=20200907; author="Y. Morishita"
+    print("\n{} ver{} {} {}".format(os.path.basename(argv[0]), ver, date, author), flush=True)
     print("{} {}".format(os.path.basename(argv[0]), ' '.join(argv[1:])), flush=True)
 
+    global Aloop, ifgdates, ifgdir, length, width, loop_pngdir ## for parallel processing
 
     #%% Set default
     ifgdir = []
     tsadir = []
     loop_thre = 1.5
+    n_para = len(os.sched_getaffinity(0))
 
+    cmap_noise = 'viridis'
+    cmap_noise_r = 'viridis_r'
 
     #%% Read options
     try:
         try:
-            opts, args = getopt.getopt(argv[1:], "hd:t:l:", ["help"])
+            opts, args = getopt.getopt(argv[1:], "hd:t:l:", ["help", "n_para="])
         except getopt.error as msg:
             raise Usage(msg)
         for o, a in opts:
@@ -119,6 +137,8 @@ def main(argv=None):
                 tsadir = a
             elif o == '-l':
                 loop_thre = float(a)
+            elif o == '--n_para':
+                n_para = int(a)
 
         if not ifgdir:
             raise Usage('No data directory given, -d is not optional!')
@@ -151,7 +171,7 @@ def main(argv=None):
     loopdir = os.path.join(tsadir, '12loop')
     if not os.path.exists(loopdir): os.mkdir(loopdir)
 
-    loop_pngdir = os.path.join(loopdir ,'loop_png')
+    loop_pngdir = os.path.join(loopdir ,'good_loop_png')
     bad_loop_pngdir = os.path.join(loopdir,'bad_loop_png')
     bad_loop_cand_pngdir = os.path.join(loopdir,'bad_loop_cand_png')
 
@@ -228,37 +248,31 @@ def main(argv=None):
 
 
     #%% 1st loop closure check. First without reference
-    print('\n1st Loop closure check and make png for all possible {} loops...'.format(n_loop), flush=True)
+    print('\n1st Loop closure check and make png for all possible {} loops,'.format(n_loop), flush=True)
+    print('with {} parallel processing...'.format(n_para), flush=True)
+    
     bad_ifg_cand = []
     good_ifg = []
-    loop_ph_rms_ifg = []
+
+    ### Parallel processing
+    p = multi.Pool(n_para)
+    loop_ph_rms_ifg = np.array(p.map(loop_closure_1st_wrapper, range(n_loop)), dtype=object)
+    p.close()
+
 
     for i in range(n_loop):
-        if np.mod(i, 100) == 0:
-            print("  {0:3}/{1:3}th loop...".format(i, n_loop), flush=True)
-
-        unw12, unw23, unw13, ifgd12, ifgd23, ifgd13 = loop_lib.read_unw_loop_ph(Aloop[i, :], ifgdates, ifgdir, length, width)
-
-        ## Calculate loop phase and check n bias (2pi*n)
-        loop_ph = unw12+unw23-unw13
-        loop_2pin = int(np.round(np.nanmedian(loop_ph)/(2*np.pi)))*2*np.pi
-        loop_ph = loop_ph-loop_2pin #unbias 2pi x n
-        loop_ph_rms_ifg.append(np.sqrt(np.nanmean(loop_ph**2)))
+        ### Find index of ifg
+        ix_ifg12, ix_ifg23 = np.where(Aloop[i, :] == 1)[0]
+        ix_ifg13 = np.where(Aloop[i, :] == -1)[0][0]
+        ifgd12 = ifgdates[ix_ifg12]
+        ifgd23 = ifgdates[ix_ifg23]
+        ifgd13 = ifgdates[ix_ifg13]
 
         ### List as good or bad candidate
         if loop_ph_rms_ifg[i] >= loop_thre: #Bad loop including bad ifg.
             bad_ifg_cand.extend([ifgd12, ifgd23, ifgd13])
         else:
             good_ifg.extend([ifgd12, ifgd23, ifgd13])
-
-        ### Output png. If exist in old, move to save time
-        oldpng = os.path.join(loop_pngdir+'_old/', ifgd12[:8]+'_'+ifgd23[:8]+'_'+ifgd13[-8:]+'_loop.png')
-        if os.path.exists(oldpng):
-            ### Just move from old png
-            shutil.move(oldpng, loop_pngdir)
-        else:
-            ### Make png. Take time a little.
-            loop_lib.make_loop_png(ifgd12, ifgd23, ifgd13, unw12, unw23, unw13, loop_ph, loop_pngdir)
 
     if os.path.exists(loop_pngdir+'_old/'):
         shutil.rmtree(loop_pngdir+'_old/')
@@ -336,8 +350,8 @@ def main(argv=None):
     refx1 = refyx[1][0]
     refx2 = refyx[1][0]+1
 
-    ### Save ref.txt
-    reffile = os.path.join(infodir, 'ref.txt')
+    ### Save 12ref.txt
+    reffile = os.path.join(infodir, '12ref.txt')
     with open(reffile, 'w') as f:
         print('{0}:{1}/{2}:{3}'.format(refx1, refx2, refy1, refy2), file=f)
 
@@ -345,11 +359,10 @@ def main(argv=None):
     loop_ph_rms_maskedfile = os.path.join(loopdir, 'loop_ph_rms_masked')
     loop_ph_rms_points_masked.tofile(loop_ph_rms_maskedfile)
 
-    cmap = 'viridis_r'
     cmax = np.nanpercentile(loop_ph_rms_points_masked, 95)
     pngfile = loop_ph_rms_maskedfile+'.png'
     title = 'RMS of loop phase (rad)'
-    plot_lib.make_im_png(loop_ph_rms_points_masked, pngfile, cmap, title, None, cmax)
+    plot_lib.make_im_png(loop_ph_rms_points_masked, pngfile, cmap_noise_r, title, None, cmax)
 
     ### Check ref exist in unw. If not, list as noref_ifg
     noref_ifg = []
@@ -442,7 +455,7 @@ def main(argv=None):
             print('{}'.format(i), file=f)
 
     ### Remaining candidate of bad ifg
-    bad_ifg_cand_res = list(set(bad_ifg_cand+bad_ifg_cand2)-set(bad_ifg_all))
+    bad_ifg_cand_res = list(set(bad_ifg_cand2)-set(bad_ifg_all))
     bad_ifg_cand_res.sort()
 
     bad_ifg_candfile = os.path.join(infodir, '12bad_ifg_cand.txt')
@@ -482,8 +495,8 @@ def main(argv=None):
     #%% Output loop info, move bad_loop_png
     loop_info_file = os.path.join(loopdir, 'loop_info.txt')
     f = open(loop_info_file, 'w')
-    print('# loop_thre: {} rad. *: Removed w/o ref'.format(loop_thre), file=f)
-    print('# /: Candidates of bad but kept, **: Removed w/ ref', file=f)
+    print('# loop_thre: {} rad. *: Removed w/o ref, **: Removed w/ ref'.format(loop_thre), file=f)
+    print('# /: Candidates of bad loops but causative ifgs unidentified', file=f)
     print('# image1   image2   image3 RMS w/oref  w/ref', file=f)
 
     for i in range(n_loop):
@@ -533,9 +546,13 @@ def main(argv=None):
     n_unw = np.zeros((length, width), dtype=np.int16)
     for ifgd in ifgdates_good:
         ccfile = os.path.join(ifgdir, ifgd, ifgd+'.cc')
-        coh = io_lib.read_img(ccfile, length, width)
-        
-        coh[np.isnan(coh)] = 0 # Fill nan with 0
+        if os.path.getsize(ccfile) == length*width:
+            coh = io_lib.read_img(ccfile, length, width, np.uint8)
+            coh = coh.astype(np.float32)/255
+        else:
+            coh = io_lib.read_img(ccfile, length, width)
+            coh[np.isnan(coh)] = 0 # Fill nan with 0
+
         coh_avg += coh
         n_coh += (coh!=0)
 
@@ -562,12 +579,12 @@ def main(argv=None):
 
     ### Save png
     title = 'Average coherence'
-    plot_lib.make_im_png(coh_avg, coh_avgfile+'.png', 'viridis', title)
+    plot_lib.make_im_png(coh_avg, coh_avgfile+'.png', cmap_noise, title)
     title = 'Number of used unw data'
-    plot_lib.make_im_png(n_unw, n_unwfile+'.png', 'viridis', title, n_im)
+    plot_lib.make_im_png(n_unw, n_unwfile+'.png', cmap_noise, title, n_im)
 
     title = 'Number of unclosed loops'
-    plot_lib.make_im_png(ns_loop_err, n_loop_errfile+'.png', 'viridis_r', title)
+    plot_lib.make_im_png(ns_loop_err, n_loop_errfile+'.png', cmap_noise_r, title)
 
 
     #%% Link ras
@@ -607,13 +624,13 @@ def main(argv=None):
         bperp = np.random.random(n_im).tolist()
 
     pngfile = os.path.join(netdir, 'network12_all.png')
-    plot_lib.plot_network(ifgdates, bperp, [], pngfile, pdf=True)
+    plot_lib.plot_network(ifgdates, bperp, [], pngfile)
 
     pngfile = os.path.join(netdir, 'network12.png')
-    plot_lib.plot_network(ifgdates, bperp, bad_ifg_all, pngfile, pdf=True)
+    plot_lib.plot_network(ifgdates, bperp, bad_ifg_all, pngfile)
 
     pngfile = os.path.join(netdir, 'network12_nobad.png')
-    plot_lib.plot_network(ifgdates, bperp, bad_ifg_all, pngfile, plot_bad=False, pdf=True)
+    plot_lib.plot_network(ifgdates, bperp, bad_ifg_all, pngfile, plot_bad=False)
 
     ### Network info
     ## Identify gaps
@@ -682,6 +699,32 @@ def main(argv=None):
     print('\n{} Successfully finished!!\n'.format(os.path.basename(argv[0])))
     print('Output directory: {}\n'.format(os.path.relpath(tsadir)))
 
+
+#%% 
+def loop_closure_1st_wrapper(i):
+    n_loop = Aloop.shape[0]
+    
+    if np.mod(i, 100) == 0:
+        print("  {0:3}/{1:3}th loop...".format(i, n_loop), flush=True)
+
+    unw12, unw23, unw13, ifgd12, ifgd23, ifgd13 = loop_lib.read_unw_loop_ph(Aloop[i, :], ifgdates, ifgdir, length, width)
+
+    ## Calculate loop phase and check n bias (2pi*n)
+    loop_ph = unw12+unw23-unw13
+    loop_2pin = int(np.round(np.nanmedian(loop_ph)/(2*np.pi)))*2*np.pi
+    loop_ph = loop_ph-loop_2pin #unbias 2pi x n
+    loop_ph_rms_ifg = np.sqrt(np.nanmean(loop_ph**2))
+
+    ### Output png. If exist in old, move to save time
+    oldpng = os.path.join(loop_pngdir+'_old/', ifgd12[:8]+'_'+ifgd23[:8]+'_'+ifgd13[-8:]+'_loop.png')
+    if os.path.exists(oldpng):
+        ### Just move from old png
+        shutil.move(oldpng, loop_pngdir)
+    else:
+        ### Make png. Take time a little.
+        loop_lib.make_loop_png(ifgd12, ifgd23, ifgd13, unw12, unw23, unw13, loop_ph, loop_pngdir)
+
+    return loop_ph_rms_ifg
 
 
 #%% main

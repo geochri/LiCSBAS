@@ -1,38 +1,38 @@
 #!/usr/bin/env python3
 """
+v1.1 20190805 Yu Morishita, Uni of Leeds and GSI
+
 ========
 Overview
 ========
-This script calculates the standard deviation of the velocity by bootstrap and STC (spatio-temporal consistency; Hanssen et al., 2008, Terrafirma).
-
-=========
-Changelog
-=========
-v1.1 20190805 Yu Morishita, Uni of Leeds and GSI
- - Bag fix of stc calculation with overlapping
-v1.0 20190725 Yu Morishita, Uni of Leeds and GSI
- - Original implementation
+This script calculates the standard deviation of the velocity by the bootstrap method and STC (spatio-temporal consistency; Hanssen et al., 2008).
 
 ===============
 Input & output files
 ===============
-Inputs in TS_GEOCml* directory :
+Inputs in TS_GEOCml*/ :
  - cum.h5 : Cumulative displacement (time-series) in mm
  
-Outputs in TS_GEOCml*/results directory
+Outputs in TS_GEOCml*/results/ :
  - vstd[.png] : Std of velocity in mm/yr
  - stc[.png]  : Spatio-temporal consistency in mm
 
 =====
 Usage
 =====
-LiCSBAS14_vel_std.py -t tsadir [--mem_size mem_size]
+LiCSBAS14_vel_std.py -t tsadir [--mem_size float]
 
- -t  Path to the TS_[IFG|GEOC]ml?? dir.
+ -t  Path to the TS_GEOCml* dir.
  --mem_size   Max memory size for each patch in MB. (Default: 4000)
 
 """
-
+#%% Change log
+'''
+v1.1 20190805 Yu Morishita, Uni of Leeds and GSI
+ - Bag fix of stc calculation with overlapping
+v1.0 20190725 Yu Morishita, Uni of Leeds and GSI
+ - Original implementation
+'''
 
 #%% Import
 import getopt
@@ -42,6 +42,7 @@ import time
 import h5py as h5
 import numpy as np
 import datetime as dt
+import SCM
 import LiCSBAS_io_lib as io_lib
 import LiCSBAS_inv_lib as inv_lib
 import LiCSBAS_tools_lib as tools_lib
@@ -61,6 +62,8 @@ def main(argv=None):
         argv = sys.argv
         
     start = time.time()
+    ver=1.1; date=20190805; author="Y. Morishita"
+    print("\n{} ver{} {} {}".format(os.path.basename(argv[0]), ver, date, author), flush=True)
     print("{} {}".format(os.path.basename(argv[0]), ' '.join(argv[1:])), flush=True)
 
 
@@ -68,7 +71,8 @@ def main(argv=None):
     tsadir = []
     memory_size = 4000
 
-
+    cmap_noise_r = 'viridis_r'
+    
     #%% Read options
     try:
         try:
@@ -186,18 +190,17 @@ def main(argv=None):
 
     stc = io_lib.read_img(stcfile, length, width)
     pngfile = stcfile+'.png'
-    cmap = 'viridis_r'
     title = 'Spatio-temporal consistency (mm)'
     cmin = np.nanpercentile(stc, 1)
     cmax = np.nanpercentile(stc, 99)
-    plot_lib.make_im_png(stc, pngfile, cmap, title, cmin, cmax)
+    plot_lib.make_im_png(stc, pngfile, cmap_noise_r, title, cmin, cmax)
 
     vstd = io_lib.read_img(vstdfile, length, width)
     pngfile = vstdfile+'.png'
     title = 'STD of velocity (mm/yr)'
     cmin = np.nanpercentile(vstd, 1)
     cmax = np.nanpercentile(vstd, 99)
-    plot_lib.make_im_png(vstd, pngfile, cmap, title, cmin, cmax)
+    plot_lib.make_im_png(vstd, pngfile, cmap_noise_r, title, cmin, cmax)
 
 
     #%% Finish

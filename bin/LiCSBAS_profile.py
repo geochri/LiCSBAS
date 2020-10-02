@@ -1,15 +1,11 @@
 #!/usr/bin/env python3
 """
+v1.1 20200902 Yu Morishita, GSI
+
 ========
 Overview
 ========
 This script gets a profile data between two points specified in geographical coordinates or xy coordinates from a float file. A quick look image is displayed and a text file and kml file are output. 
-
-=========
-Changelog
-=========
-v1.0 20190916 Yu Morishita, Uni of Leeds and GSI
- - Original implementationf
 
 =====
 Usage
@@ -25,8 +21,16 @@ LiCSBAS_profile.py -i infile -p dempar [-r x1,y1/x2,y2] [-g lon1,lat1/lon2,lat2]
  --bigendian  If input file is in big endian
  --nodisplay  Not display quick look images
 
-"""
+ Note: either -r or -g must be specified.
 
+"""
+#%% Change log
+'''
+v1.1 20200902 Yu Morishita, GSI
+ - Use nearest interpolation to avoid expanded nan
+v1.0 20190916 Yu Morishita, Uni of Leeds and GSI
+ - Original implementation
+'''
 
 #%% Import
 import getopt
@@ -57,6 +61,9 @@ def main(argv=None):
         argv = sys.argv
         
     start = time.time()
+    ver=1.1; date=20200902; author="Y. Morishita"
+    print("\n{} ver{} {} {}".format(os.path.basename(argv[0]), ver, date, author), flush=True)
+    print("{} {}".format(os.path.basename(argv[0]), ' '.join(argv[1:])), flush=True)
 
     #%% Set default
     infile = []
@@ -208,7 +215,7 @@ def main(argv=None):
         if ymin < 0: ymin = 0
         if ymax > length: ymax = length
 
-        im = axes[0].imshow(data)
+        im = axes[0].imshow(data, interpolation='nearest')
         axes[0].plot([x1, x2], [y1, y2], 'ro-')
         axes[0].text(x1, y1, 'A')
         axes[0].text(x2, y2, 'B')

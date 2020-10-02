@@ -8,7 +8,14 @@ Python3 library of loop closure check functions for LiCSBAS.
 =========
 Changelog
 =========
-v1.1 201900906 Yu Morioshita, Uni of Leeds and GSI
+v1.4 20200828 Yu Morishita, GSI
+ - Update for matplotlib >= 3.3
+ - Use nearest interpolation for insar cmap to avoid aliasing
+v1.3 20200703 Yu Morioshita, GSI
+ - Replace problematic terms
+v1.2 20200224 Yu Morioshita, Uni of Leeds and GSI
+ - Change color of loop phase
+v1.1 20190906 Yu Morioshita, Uni of Leeds and GSI
  - tight_layout for loop png
 v1.0 20190708 Yu Morioshita, Uni of Leeds and GSI
  - Original implementation
@@ -16,15 +23,16 @@ v1.0 20190708 Yu Morioshita, Uni of Leeds and GSI
 
 import os
 import numpy as np
+import SCM
 import LiCSBAS_io_lib as io_lib
 import LiCSBAS_tools_lib as tools_lib
 
 os.environ['QT_QPA_PLATFORM']='offscreen'
 import warnings
-import matplotlib
+import matplotlib as mpl
 with warnings.catch_warnings(): ## To silence user warning
     warnings.simplefilter('ignore', UserWarning)
-    matplotlib.use('Agg')
+    mpl.use('Agg')
 from matplotlib import pyplot as plt
 
 
@@ -45,15 +53,15 @@ def make_loop_matrix(ifgdates):
     Aloop = []
 
     for ix_ifg12, ifgd12 in enumerate(ifgdates):
-        master12 = ifgd12[0:8]
-        slave12 = ifgd12[9:17]
-        ifgdates23 = [ ifgd for ifgd in ifgdates if ifgd.startswith(slave12)] # all candidates of ifg23
+        primary12 = ifgd12[0:8]
+        secondary12 = ifgd12[9:17]
+        ifgdates23 = [ ifgd for ifgd in ifgdates if ifgd.startswith(secondary12)] # all candidates of ifg23
 
         for ifgd23 in ifgdates23: # for each candidate of ifg23
-            slave23 = ifgd23[9:17]
+            secondary23 = ifgd23[9:17]
             try:
                 ## Search ifg13
-                ix_ifg13 = ifgdates.index(master12+'_'+slave23)
+                ix_ifg13 = ifgdates.index(primary12+'_'+secondary23)
             except: # no loop for this ifg23. Next.
                 continue
 
@@ -112,7 +120,7 @@ def identify_bad_ifg(bad_ifg_cand, good_ifg):
 def make_loop_png(ifgd12, ifgd23, ifgd13, unw12, unw23, unw13, loop_ph, loop_pngdir):
     ### Load color map for InSAR
     cdict = tools_lib.cmap_insar()
-    plt.register_cmap(name='insar',data=cdict)
+    plt.register_cmap(cmap=mpl.colors.LinearSegmentedColormap('insar', cdict))
 
     rms = np.sqrt(np.nanmean(loop_ph**2))
 
@@ -122,8 +130,8 @@ def make_loop_png(ifgd12, ifgd23, ifgd13, unw12, unw23, unw13, loop_ph, loop_png
     imd3 = ifgd23[-8:]
     pngname = os.path.join(loop_pngdir, imd1+'_'+imd2+'_'+imd3+'_loop.png')
     cycle = 3 # 2pi*3/cycle
-    titles = [ifgd12, ifgd23, ifgd13, 'Loop phase (RMS={:.2f}rad)'.format(rms)]
-    data = [unw12, unw23, unw13, loop_ph]
+    titles = [ifgd12, ifgd23, ifgd13]
+    data = [unw12, unw23, unw13]
 
     length, width = unw12.shape
     if length > width:
@@ -138,13 +146,21 @@ def make_loop_png(ifgd12, ifgd23, ifgd13, unw12, unw23, unw13, loop_ph, loop_png
     ### Plot
     fig = plt.figure(figsize = (figsize_x, figsize_y))
 
-    for i in range(4):
+    ## 3 ifgs
+    for i in range(3):
         data_wrapped = np.angle(np.exp(1j*(data[i]/cycle))*cycle)
         ax = fig.add_subplot(2, 2, i+1) #index start from 1
-        ax.imshow(data_wrapped, vmin=-np.pi, vmax=+np.pi, cmap='insar')
-        ax.set_title('{0}'.format(titles[i]))
+        ax.imshow(data_wrapped, vmin=-np.pi, vmax=+np.pi, cmap='insar', interpolation='nearest')
+        ax.set_title('{}'.format(titles[i]))
         ax.set_xticklabels([])
         ax.set_yticklabels([])
+
+    ## loop phase
+    ax = fig.add_subplot(2, 2, 4) #index start from 1
+    ax.imshow(loop_ph, vmin=-np.pi, vmax=+np.pi, cmap=SCM.vik, interpolation='nearest')
+    ax.set_title('Loop phase (RMS={:.2f}rad)'.format(rms))
+    ax.set_xticklabels([])
+    ax.set_yticklabels([])
 
     plt.tight_layout()
     plt.savefig(pngname)
